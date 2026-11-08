@@ -1,0 +1,18 @@
+# Install once with: uv run pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: block-private-and-document-files
+        name: Block private paths and document files
+        entry: python scripts/check_forbidden_files.py
+        language: python
+        pass_filenames: true
+        # Check every staged path, including binary files.
+        types: [file]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
