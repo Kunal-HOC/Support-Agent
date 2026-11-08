@@ -144,7 +144,10 @@ Tests never read `.env`. They inject settings through fixtures.
 
 - **Block private paths and document files.** Rejects:
   - `.env` and `.env.*` files, except `.env.example`
-  - anything inside a `data/`, `uploads/` or `evals/private/` folder, at any depth
+  - anything inside a `data/`, `uploads/` or `evals/private/` folder at the repo
+    root or directly under a package root (`core/`, `server/`, `agents/`, `mcp/`,
+    `client/`), e.g. `server/uploads/`. Deeper folders with these names (for
+    example a `data` module inside `src/`) are allowed.
   - `.pdf .doc .docx .odt .rtf .pages` files (any case) outside a `tests/fixtures/` folder
 - **ruff** lint (with autofix) and **ruff format**.
 

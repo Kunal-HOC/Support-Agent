@@ -2,9 +2,25 @@
 .env
 .env.*
 !.env.example
-data/
-uploads/
-evals/private/
+# Private folders at the repo root and directly under each package root.
+/data/
+/uploads/
+/evals/private/
+/core/data/
+/core/uploads/
+/core/evals/private/
+/server/data/
+/server/uploads/
+/server/evals/private/
+/agents/data/
+/agents/uploads/
+/agents/evals/private/
+/mcp/data/
+/mcp/uploads/
+/mcp/evals/private/
+/client/data/
+/client/uploads/
+/client/evals/private/
 
 # Python
 __pycache__/

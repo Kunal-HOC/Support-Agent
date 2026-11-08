@@ -1,9 +1,12 @@
 """Pre-commit hook: block private data and document files from being committed.
 
-Blocked (paths compared case-insensitively, at any depth):
-- ``.env`` and ``.env.*`` files, except ``.env.example``
-- anything inside a ``data/``, ``uploads/`` or ``evals/private/`` directory
-- ``.pdf .doc .docx .odt .rtf .pages`` files outside a ``tests/fixtures/`` directory
+Blocked (paths compared case-insensitively):
+- ``.env`` and ``.env.*`` files at any depth, except ``.env.example``
+- anything inside a ``data/``, ``uploads/`` or ``evals/private/`` directory at
+  the repo root or directly under a package root (``core/``, ``server/``,
+  ``agents/``, ``mcp/``, ``client/``), e.g. ``server/uploads/``
+- ``.pdf .doc .docx .odt .rtf .pages`` files at any depth outside a
+  ``tests/fixtures/`` directory
 
 Usage: ``python scripts/check_forbidden_files.py <path> [<path> ...]``
 Exits 1 and lists every blocked path if any are found.
@@ -16,6 +19,7 @@ from collections.abc import Sequence
 from pathlib import PurePosixPath
 
 BLOCKED_DIRS: tuple[tuple[str, ...], ...] = (("data",), ("uploads",), ("evals", "private"))
+PACKAGE_ROOTS = frozenset({"core", "server", "agents", "mcp", "client"})
 DOCUMENT_EXTENSIONS = frozenset({".pdf", ".doc", ".docx", ".odt", ".rtf", ".pages"})
 FIXTURES_DIR: tuple[str, ...] = ("tests", "fixtures")
 ENV_EXAMPLE = ".env.example"
@@ -24,6 +28,21 @@ ENV_EXAMPLE = ".env.example"
 def _contains(parts: Sequence[str], sequence: Sequence[str]) -> bool:
     size = len(sequence)
     return any(tuple(parts[i : i + size]) == tuple(sequence) for i in range(len(parts) - size + 1))
+
+
+def _starts_with(parts: Sequence[str], prefix: Sequence[str]) -> bool:
+    return tuple(parts[: len(prefix)]) == tuple(prefix)
+
+
+def _in_private_dir(directories: Sequence[str], blocked: Sequence[str]) -> bool:
+    """True if ``blocked`` sits at the repo root or directly under a package root."""
+    if _starts_with(directories, blocked):
+        return True
+    return (
+        len(directories) > 0
+        and directories[0] in PACKAGE_ROOTS
+        and _starts_with(directories[1:], blocked)
+    )
 
 
 def reason_blocked(path: str) -> str | None:
@@ -38,7 +57,7 @@ def reason_blocked(path: str) -> str | None:
     if (name == ".env" or name.startswith(".env.")) and name != ENV_EXAMPLE:
         return "environment file"
     for blocked in BLOCKED_DIRS:
-        if _contains(directories, blocked):
+        if _in_private_dir(directories, blocked):
             return f"inside a private '{'/'.join(blocked)}/' directory"
     if pure.suffix.lower() in DOCUMENT_EXTENSIONS and not _contains(directories, FIXTURES_DIR):
         return "document file outside tests/fixtures/"
