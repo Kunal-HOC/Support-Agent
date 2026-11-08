@@ -15,6 +15,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CHAR,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Computed,
     DateTime,
@@ -27,6 +28,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy import false as sa_false
 from sqlalchemy.dialects.postgresql import ARRAY, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -59,15 +61,15 @@ def _updated_at() -> Mapped[datetime]:
     return mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+VERSION_STATUSES = ("pending", "indexed", "failed")
+
+
 class Document(Base):
     __tablename__ = "documents"
-    __table_args__ = (CheckConstraint("status IN ('active', 'archived')", name="status"),)
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     title: Mapped[str] = mapped_column(Text, nullable=False)
-    source_filename: Mapped[str] = mapped_column(Text, nullable=False)
-    content_type: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -78,6 +80,7 @@ class DocumentVersion(Base):
         UniqueConstraint("document_id", "version"),
         CheckConstraint("version >= 1", name="version_positive"),
         CheckConstraint("status IN ('pending', 'indexed', 'failed')", name="status"),
+        Index("ix_document_versions_content_sha256", "content_sha256"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -88,8 +91,12 @@ class DocumentVersion(Base):
     content_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    source_filename: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(Text, nullable=False)
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -105,6 +112,7 @@ class Chunk(Base):
         ),
         Index("ix_chunks_content_tsv_gin", "content_tsv", postgresql_using="gin"),
         Index("ix_chunks_document_version_id", "document_version_id"),
+        Index("ix_chunks_document_id_is_active", "document_id", "is_active"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -123,6 +131,8 @@ class Chunk(Base):
     content_tsv: Mapped[str] = mapped_column(
         TSVECTOR, Computed(TSVECTOR_EXPRESSION, persisted=True), nullable=True
     )
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_false())
     created_at: Mapped[datetime] = _created_at()
 
 

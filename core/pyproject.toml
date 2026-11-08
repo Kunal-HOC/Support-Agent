@@ -6,11 +6,16 @@ license = "MIT"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic",
+    "markdown-it-py",
+    "openai",
+    "pdfplumber",
     "pgvector",
     "psycopg[binary]",
     "pydantic",
     "pydantic-settings",
+    "python-docx",
     "sqlalchemy[asyncio]",
+    "tiktoken",
 ]
 
 [build-system]

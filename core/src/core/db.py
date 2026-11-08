@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -33,14 +32,6 @@ def create_engine(settings: Settings) -> AsyncEngine:
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
-
-
-async def session_scope(
-    factory: async_sessionmaker[AsyncSession],
-) -> AsyncIterator[AsyncSession]:
-    """Yield a session that is closed afterwards (for use as a dependency)."""
-    async with factory() as session:
-        yield session
 
 
 async def is_database_reachable(engine: AsyncEngine) -> bool:

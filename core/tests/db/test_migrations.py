@@ -104,26 +104,23 @@ def test_chunk_insert_fills_tsvector(alembic_config: Config, engine: sa.Engine) 
 
     with engine.begin() as conn:
         document_id = conn.execute(
-            sa.text(
-                "INSERT INTO documents (title, source_filename, content_type, status) "
-                "VALUES ('Sample', 'sample.md', 'text/markdown', 'active') RETURNING id"
-            )
+            sa.text("INSERT INTO documents (title, category) VALUES ('Sample', 'IT') RETURNING id")
         ).scalar_one()
         version_id = conn.execute(
             sa.text(
                 "INSERT INTO document_versions (document_id, version, content_sha256, "
-                "file_size_bytes, storage_path, status) "
-                "VALUES (:doc, 1, repeat('a', 64), 10, 'placeholder/path', 'indexed') "
-                "RETURNING id"
+                "file_size_bytes, storage_path, source_filename, content_type, status) "
+                "VALUES (:doc, 1, repeat('a', 64), 10, 'placeholder/path', 'sample.md', "
+                "'text/markdown', 'indexed') RETURNING id"
             ),
             {"doc": document_id},
         ).scalar_one()
         tsv = conn.execute(
             sa.text(
                 "INSERT INTO chunks (document_id, document_version_id, version, chunk_index, "
-                "section_path, page, content, embedding) "
+                "section_path, page, content, embedding, token_count) "
                 "VALUES (:doc, :ver, 1, 0, ARRAY['Intro'], NULL, 'Refunds are processed', "
-                "CAST(:emb AS vector)) RETURNING content_tsv::text"
+                "CAST(:emb AS vector), 3) RETURNING content_tsv::text"
             ),
             {"doc": document_id, "ver": version_id, "emb": vector_literal},
         ).scalar_one()
@@ -155,3 +152,51 @@ def test_models_match_migrated_database(alembic_config: Config, engine: sa.Engin
         context = MigrationContext.configure(conn, opts={"compare_type": _compare_type})
         diff = compare_metadata(context, Base.metadata)
     assert diff == []
+
+
+def test_0002_downgrade_keeps_document_file_metadata(
+    alembic_config: Config, engine: sa.Engine
+) -> None:
+    command.upgrade(alembic_config, "head")
+    with engine.begin() as conn:
+        document_id = conn.execute(
+            sa.text("INSERT INTO documents (title, category) VALUES ('Doc', 'IT') RETURNING id")
+        ).scalar_one()
+        for version, name in ((1, "old.md"), (2, "new.pdf")):
+            conn.execute(
+                sa.text(
+                    "INSERT INTO document_versions (document_id, version, content_sha256, "
+                    "file_size_bytes, storage_path, source_filename, content_type, status) "
+                    "VALUES (:doc, :v, repeat('b', 64), 1, 'p', :name, 'x/y', 'failed')"
+                ),
+                {"doc": document_id, "v": version, "name": name},
+            )
+
+    command.downgrade(alembic_config, "0001_foundation")
+    with engine.connect() as conn:
+        row = conn.execute(
+            sa.text("SELECT source_filename, status FROM documents WHERE id = :id"),
+            {"id": document_id},
+        ).one()
+    assert tuple(row) == ("new.pdf", "active")
+
+
+def test_0002_upgrade_copies_file_metadata_to_versions(
+    alembic_config: Config, engine: sa.Engine
+) -> None:
+    # 0002 adds documents.category NOT NULL with no value to fill it from, so it
+    # can only upgrade an empty documents table (M1 never writes documents).
+    command.upgrade(alembic_config, "0001_foundation")
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO documents (title, source_filename, content_type, status) "
+                "VALUES ('Doc', 'a.md', 'text/markdown', 'active')"
+            )
+        )
+    with pytest.raises(sa.exc.IntegrityError, match="category"):
+        command.upgrade(alembic_config, "head")
+    with engine.begin() as conn:
+        conn.execute(sa.text("DELETE FROM documents"))
+    command.upgrade(alembic_config, "head")
+    assert _tables(engine) == M1_TABLES

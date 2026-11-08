@@ -6,9 +6,13 @@ Feature 1 is a knowledge agent: staff upload SOP documents, which are indexed in
 PostgreSQL + pgvector and answered by a LangGraph tool-calling agent with
 citations and human approval.
 
-**Status: milestone M1 (Foundation).** This milestone sets up the project,
-settings, a FastAPI skeleton with `GET /health`, and the database schema.
-There is no ingestion, retrieval, agent, MCP server or UI yet.
+**Status: milestone M2 (Ingestion).**
+- M1 set up the project, settings, a FastAPI skeleton with `GET /health`, and
+  the database schema.
+- M2 turns uploaded SOP files (PDF, DOCX, Markdown) into embedded,
+  searchable chunks.
+
+There is no retrieval, agent, MCP server or UI yet.
 
 ## Repository layout
 
@@ -35,6 +39,18 @@ invalid, startup fails and lists all of them at once.
 | `EMBEDDING_DIMENSION` | Whole number from 1 to 2000. Fixed in the database when migrations run. |
 | `APP_ENV` | `development`, `test` or `production` (`production` turns off `/docs` and `/openapi.json`) |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` |
+| `UPLOAD_DIR` | Absolute path to an existing, writable folder **outside the repository**. Original uploads are stored here. |
+| `MAX_UPLOAD_BYTES` | Whole number, at least 1 (e.g. `10485760` for 10 MiB) |
+| `MAX_PAGES` | Whole number, at least 1. PDFs with more pages fail with "page limit exceeded". |
+| `SOP_CATEGORIES` | Comma-separated names, no blanks or duplicates (e.g. `IT,HR,Facilities`) |
+| `EMBEDDING_PROVIDER` | `openai` |
+| `EMBEDDING_MODEL` | An OpenAI embedding model, e.g. `text-embedding-3-small` |
+| `OPENAI_API_KEY` | Your OpenAI API key (secret) |
+| `EMBEDDING_BATCH_SIZE` | 1 to 2048 texts per embeddings request |
+| `CHUNKING_STRATEGY` | `heading` (never crosses a section) or `fixed` (sliding window baseline) |
+| `CHUNK_MAX_TOKENS` | Whole number, at least 1 |
+| `CHUNK_OVERLAP_TOKENS` | Whole number, at least 0 and less than `CHUNK_MAX_TOKENS` |
+| `TOKENIZER_ENCODING` | A tiktoken encoding name, e.g. `cl100k_base` |
 
 Settings are read from environment variables, and from a `.env` file in the
 current directory if one exists. `.env.example` lists the keys with
@@ -100,6 +116,18 @@ notepad .env   # replace every <placeholder> with a real value
 
 For example: `DATABASE_URL=postgresql+psycopg://support_agent:<password>@localhost:5432/support_agent`.
 
+Create the uploads folder somewhere **outside** the repository, for example:
+
+```powershell
+New-Item -ItemType Directory -Force C:\SupportAgentData\uploads
+```
+
+and set `UPLOAD_DIR=C:\SupportAgentData\uploads`. The app refuses to start if
+the folder is missing, not writable, or inside the repository.
+
+The first time a document is chunked, tiktoken downloads its encoding file from
+`openaipublic.blob.core.windows.net` and caches it.
+
 ### 5. Install, migrate and run
 
 ```powershell
@@ -136,7 +164,19 @@ $env:TEST_DATABASE_URL = "postgresql+psycopg://support_agent:<password>@localhos
 uv run pytest
 ```
 
-Tests never read `.env`. They inject settings through fixtures.
+Tests never read `.env`. They inject settings through fixtures. Embeddings are
+faked by default. Tests that chunk with the real tokenizer read the committed
+`core/tests/fixtures/tiktoken/cl100k_base.tiktoken`, so no download is needed.
+
+One opt-in test calls the real OpenAI API. It is skipped unless you run:
+
+```powershell
+$env:TEST_OPENAI_API_KEY = "<key>"; $env:TEST_EMBEDDING_MODEL = "text-embedding-3-small"
+uv run pytest -m openai --run-openai
+```
+
+To regenerate the fictional SOP fixtures, run
+`uv run python core/tests/fixtures/sop/generate.py`.
 
 ## Pre-commit hooks
 
@@ -151,13 +191,56 @@ Tests never read `.env`. They inject settings through fixtures.
   - `.pdf .doc .docx .odt .rtf .pages` files (any case) outside a `tests/fixtures/` folder
 - **ruff** lint (with autofix) and **ruff format**.
 
+## Ingestion (M2)
+
+Upload SOPs through Swagger at <http://127.0.0.1:8000/docs>.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /documents` | Multipart `file`, `title`, `category`. Returns 202 `{document_id, version: 1, status: "pending"}`. |
+| `PUT /documents/{id}` | Multipart `file`: uploads a new version. Returns 202 with `version: n+1`. |
+| `GET /documents?status=&category=` | Lists documents with their latest version's number and status, plus the active chunk count. |
+| `GET /documents/{id}` | Detail: versions (number, status, failure_reason, sha256, created_at), the active version, section paths and chunk count. |
+| `DELETE /documents/{id}` | Removes the document, its versions, chunks and stored files. Returns 204. |
+
+How it works:
+
+1. **Upload.** The request checks the file's extension and content
+   (`.pdf`, `.docx`, `.md`), its size, the title (1–200 characters) and the
+   category.
+2. **Store.** The original is saved as
+   `UPLOAD_DIR/<document_id>/v<version>/original.<ext>`.
+3. **Ingest in the background.** The file is parsed and split into chunks;
+   the chunks are embedded in batches and stored. The version then becomes
+   `indexed`, or `failed` with a reason.
+4. **Switch versions.** A new version's chunks become active only once it is
+   indexed. The previous version's chunks are then marked inactive (kept, not
+   deleted). If a new version fails, the previous one stays active.
+5. **Duplicates.** Re-uploading content that matches any non-failed version
+   returns 409.
+6. **One version at a time.** A new version can't be uploaded while the
+   previous one is still pending (409).
+7. **Restarts.** Versions left pending when the server stopped are marked
+   failed at the next startup.
+
+How headings are found:
+
+- **PDF:** the outline (bookmarks) if it has one; otherwise larger-font lines.
+- **DOCX:** paragraphs styled `Heading N`.
+- **Markdown:** `#` headings.
+
+Pages are recorded for PDFs only.
+
+PDF parsing uses pdfplumber (MIT).
+
 ## API
 
 - `GET /health` always returns 200 with `{status, database, version}`, where
   `database` is `reachable` or `unreachable`.
 - Errors return `{code, message, details, request_id}`, with `code` set to
-  `validation_error`, `http_error` or `internal_error`. Clients never see a
-  stack trace.
+  `validation_error`, `http_error`, `internal_error`, `unsupported_file_type`
+  (415), `file_too_large` (413), `duplicate_content` (409), `version_pending`
+  (409) or `not_found` (404). Clients never see a stack trace.
 - Every response has an `X-Request-ID` header. A safe incoming value (letters,
   digits, `.`, `_` and `-`, up to 128 characters) is reused; otherwise a new
   UUID is generated.

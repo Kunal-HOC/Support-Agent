@@ -12,11 +12,39 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from core.ingestion.errors import (
+    DocumentNotFound,
+    DuplicateContent,
+    FileTooLarge,
+    InvalidUpload,
+    UnsupportedFileType,
+    UploadError,
+    VersionPending,
+)
 from server.request_id import REQUEST_ID_HEADER, get_request_id
 
 logger = logging.getLogger(__name__)
 
-ErrorCode = Literal["validation_error", "http_error", "internal_error"]
+ErrorCode = Literal[
+    "validation_error",
+    "http_error",
+    "internal_error",
+    "unsupported_file_type",
+    "file_too_large",
+    "duplicate_content",
+    "version_pending",
+    "not_found",
+]
+
+# Upload error type -> (HTTP status, error code)
+UPLOAD_ERRORS: dict[type[UploadError], tuple[int, ErrorCode]] = {
+    UnsupportedFileType: (415, "unsupported_file_type"),
+    FileTooLarge: (413, "file_too_large"),
+    InvalidUpload: (422, "validation_error"),
+    DuplicateContent: (409, "duplicate_content"),
+    VersionPending: (409, "version_pending"),
+    DocumentNotFound: (404, "not_found"),
+}
 
 INTERNAL_ERROR_MESSAGE = "An unexpected error occurred."
 
@@ -66,6 +94,12 @@ async def _handle_http_error(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+async def _handle_upload_error(request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, UploadError)
+    status_code, code = UPLOAD_ERRORS[type(exc)]
+    return error_response(status_code, code, exc.message, exc.details)
+
+
 def register_error_handlers(app: FastAPI) -> None:
     """Register handlers for validation and HTTP errors.
 
@@ -74,3 +108,5 @@ def register_error_handlers(app: FastAPI) -> None:
     """
     app.add_exception_handler(RequestValidationError, _handle_validation_error)
     app.add_exception_handler(StarletteHTTPException, _handle_http_error)
+    for error_type in UPLOAD_ERRORS:
+        app.add_exception_handler(error_type, _handle_upload_error)
